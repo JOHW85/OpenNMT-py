@@ -12,7 +12,433 @@ from onmt.modules.position_ffn import ActivationFunction
 from onmt.modules.moe import MoE
 from onmt.utils.misc import sequence_mask
 from onmt.modules.rmsnorm import RMSNorm
+from onmt.modules import GlobalAttention
 
+class GTransformerDecoderLayerBase(nn.Module):
+    # Existing code ...
+    def __init__(
+        self,
+        d_model,
+        heads,
+        d_ff,
+        dropout,
+        attention_dropout,
+        self_attn_type="scaled_dot",
+        max_relative_positions=0,
+        relative_positions_buckets=0,
+        aan_useffn=False,
+        full_context_alignment=False,
+        alignment_heads=0,
+        pos_ffn_activation_fn=ActivationFunction.relu,
+        add_qkvbias=False,
+        num_kv=0,
+        add_ffnbias=True,
+        parallel_residual=False,
+        shared_layer_norm=False,
+        layer_norm="standard",
+        norm_eps=1e-6,
+        use_ckpting=[],
+        parallel_gpu=1,
+        sliding_window=0,
+        rotary_interleave=True,
+        rotary_theta=1e4,
+        rotary_dim=0,
+        num_experts=0,
+        num_experts_per_tok=2,
+    ):
+        super(TransformerDecoderLayerBase, self).__init__()
+
+        if self_attn_type in ["scaled-dot", "scaled-dot-flash"]:
+            self.self_attn_local = MultiHeadedAttention( # ADDED _local
+                heads,
+                d_model,
+                dropout=attention_dropout,
+                max_relative_positions=max_relative_positions,
+                relative_positions_buckets=relative_positions_buckets,
+                rotary_interleave=rotary_interleave,
+                rotary_theta=rotary_theta,
+                rotary_dim=rotary_dim,
+                attn_type="self",
+                self_attn_type=self_attn_type,
+                add_qkvbias=add_qkvbias,
+                num_kv=num_kv,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+            self.encoder_attn_local = MultiHeadedAttention( # ADDED _local
+                heads,
+                d_model,
+                dropout=attention_dropout,
+                attn_type="context",
+                self_attn_type=self_attn_type,
+                add_qkvbias=add_qkvbias,
+                num_kv=num_kv,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+            self.self_attn_global = MultiHeadedAttention( # ADDED _global
+                heads,
+                d_model,
+                dropout=attention_dropout,
+                max_relative_positions=max_relative_positions,
+                relative_positions_buckets=relative_positions_buckets,
+                rotary_interleave=rotary_interleave,
+                rotary_theta=rotary_theta,
+                rotary_dim=rotary_dim,
+                attn_type="self",
+                self_attn_type=self_attn_type,
+                add_qkvbias=add_qkvbias,
+                num_kv=num_kv,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+            self.encoder_attn_global = MultiHeadedAttention( # ADDED _global
+                heads,
+                d_model,
+                dropout=attention_dropout,
+                attn_type="context",
+                self_attn_type=self_attn_type,
+                add_qkvbias=add_qkvbias,
+                num_kv=num_kv,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+        elif self_attn_type == "average":
+            self.self_attn = AverageAttention(
+                d_model, dropout=attention_dropout, aan_useffn=aan_useffn
+            )
+
+        if num_experts > 0:
+            self.feed_forward = MoE(
+                num_experts,
+                num_experts_per_tok,
+                d_model,
+                d_ff,
+                dropout,
+                pos_ffn_activation_fn,
+                add_ffnbias,
+                parallel_residual,
+                layer_norm,
+                norm_eps,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+        else:
+            self.feed_forward = PositionwiseFeedForward(
+                d_model,
+                d_ff,
+                dropout,
+                pos_ffn_activation_fn,
+                add_ffnbias,
+                parallel_residual,
+                layer_norm,
+                norm_eps,
+                use_ckpting=use_ckpting,
+                parallel_gpu=parallel_gpu,
+            )
+        self.parallel_residual = parallel_residual
+        self.shared_layer_norm = shared_layer_norm
+        if layer_norm == "standard":
+            self.layer_norm_1 = nn.LayerNorm(d_model, eps=norm_eps)
+            if parallel_residual and not shared_layer_norm:
+                self.layer_norm_res = nn.LayerNorm(d_model, eps=norm_eps)
+        elif layer_norm == "rms":
+            self.layer_norm_1 = RMSNorm(d_model, eps=norm_eps)
+            if parallel_residual and not shared_layer_norm:
+                self.layer_norm_res = RMSNorm(d_model, eps=norm_eps)
+        else:
+            raise ValueError(f"{layer_norm} layer norm type is not supported")
+
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_p = dropout
+        self.full_context_alignment = full_context_alignment
+        self.alignment_heads = alignment_heads
+        self.sliding_window = sliding_window
+        self.self_attn_type = self_attn_type
+
+    def forward(self, *args, **kwargs):
+        """Extend `_forward` for (possibly) multiple decoder pass:
+        Always a default (future masked) decoder forward pass,
+        Possibly a second future aware decoder pass for joint learn
+        full context alignement, :cite:`garg2019jointly`.
+
+        Args:
+            * All arguments of _forward, of which
+            with_align (bool): needed to compute attn_align
+            return_attn (bool): to force MHA to return attns
+
+        Returns:
+            (FloatTensor, FloatTensor, FloatTensor or None):
+
+            * layer_out ``(batch_size, T, model_dim)``
+            * top_attn ``(batch_size, T, src_len)``
+            * attn_align ``(batch_size, T, src_len)`` or None
+        """
+        with_align = kwargs.pop("with_align", False)
+        layer_out, attns = self._forward(*args, **kwargs)
+        top_attn = None if attns is None else attns[:, 0, :, :].contiguous()
+        attn_align = None
+        if with_align:
+            if self.full_context_alignment:
+                # return _, (B, Q_len, K_len)
+                _, attns = self._forward(*args, **kwargs, future=True)
+
+            if self.alignment_heads > 0:
+                attns = attns[:, : self.alignment_heads, :, :].contiguous()
+            # layer average attention across heads, get ``(B, Q, K)``
+            # Case 1: no full_context, no align heads -> layer avg baseline
+            # Case 2: no full_context, 1 align heads -> guided align
+            # Case 3: full_context, 1 align heads -> full cte guided align
+            attn_align = attns.mean(dim=1)
+        return layer_out, top_attn, attn_align
+
+    def update_dropout(self, dropout, attention_dropout):
+        self.self_attn_local.update_dropout(attention_dropout) # ADDED _local
+        self.self_attn_global.update_dropout(attention_dropout) # ADDED _global
+        self.encoder_attn_local.update_dropout(attention_dropout) # ADDED _local
+        self.encoder_attn_global.update_dropout(attention_dropout) # ADDED _global
+        self.feed_forward.update_dropout(dropout)
+        self.dropout.p = dropout
+
+    def _forward(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def _compute_dec_mask(self, tgt_pad_mask, future):
+        tgt_len = tgt_pad_mask.size(-1)
+        if not future:
+            # Add triangular future_mask and pad_mask, result mask in (B, T, T).
+            future_mask = torch.ones(
+                [tgt_len, tgt_len],
+                device=tgt_pad_mask.device,
+                dtype=torch.uint8,
+            )
+            future_mask = future_mask.tril_(0)
+            if self.sliding_window > 0:
+                future_mask = future_mask.triu_(-self.sliding_window)
+            future_mask = future_mask.bool()
+            future_mask = ~future_mask.view(1, tgt_len, tgt_len)
+            # Patch for scaled dot product attention.
+            patch_mask = ~torch.all(
+                tgt_pad_mask + future_mask, dim=2, keepdim=True
+            ).expand_as(tgt_pad_mask + future_mask)
+            dec_mask = torch.gt(tgt_pad_mask + future_mask, 0)
+            dec_mask = torch.logical_and(dec_mask, patch_mask)
+        else:
+            # Only mask padding, result mask in (B, 1, T).
+            dec_mask = tgt_pad_mask
+        return dec_mask
+
+    def _forward_self_attn(self, norm_layer_in, dec_mask, step, return_attn=False, local_attn_mask=None, global_attn_mask=None): # ADDED local_attn_mask, global_attn_mask
+        if self.self_attn_type in ["scaled-dot", "scaled-dot-flash"]:
+            x_local, attn_local = self.self_attn_local( # ADDED _local
+                norm_layer_in,
+                norm_layer_in,
+                norm_layer_in,
+                mask=dec_mask,
+                attn_mask=local_attn_mask, # ADDED
+                sliding_window=self.sliding_window,
+                step=step,
+                return_attn=return_attn,
+            )
+            x_global, attn_global = self.self_attn_global( # ADDED _global
+                norm_layer_in,
+                norm_layer_in,
+                norm_layer_in,
+                mask=dec_mask,
+                attn_mask=global_attn_mask, # ADDED
+                sliding_window=self.sliding_window,
+                step=step,
+                return_attn=return_attn,
+            )
+            # merge with local
+            g = self.self_attn_gate(torch.cat([x_local, x_global], dim=-1))
+            return x_local * g + x_global * (1 - g), torch.cat((attn_local.unsqueeze(1), attn_global.unsqueeze(1)), dim=1) # ADDED _local, _global
+        elif self.self_attn_type == "average":
+            return self.self_attn(norm_layer_in, mask=dec_mask, step=step), None
+        else:
+            raise ValueError(f"self attention {type(self.self_attn)} not supported")
+
+
+class GTransformerDecoderLayer(GTransformerDecoderLayerBase): # ADDED inherit from GTransformerDecoderLayerBase
+    """Transformer Decoder layer block in Pre-Norm style.
+    Pre-Norm style is an improvement w.r.t. Original paper's Post-Norm style,
+    providing better converge speed and performance. This is also the actual
+    implementation in tensor2tensor and also avalable in fairseq.
+    See https://tunz.kr/post/4 and :cite:`DeeperTransformer`.
+
+    """
+
+    def __init__(
+        self,
+        d_model,
+        heads,
+        d_ff,
+        dropout,
+        attention_dropout,
+        self_attn_type="scaled-dot",
+        max_relative_positions=0,
+        relative_positions_buckets=0,
+        aan_useffn=False,
+        full_context_alignment=False,
+        alignment_heads=0,
+        pos_ffn_activation_fn=ActivationFunction.relu,
+        add_qkvbias=False,
+        num_kv=0,
+        add_ffnbias=True,
+        parallel_residual=False,
+        shared_layer_norm=False,
+        layer_norm="standard",
+        norm_eps=1e-6,
+        use_ckpting=[],
+        parallel_gpu=1,
+        sliding_window=0,
+        rotary_interleave=True,
+        rotary_theta=1e4,
+        rotary_dim=0,
+        num_experts=0,
+        num_experts_per_tok=2,
+    ):
+        """
+        Args:
+            See TransformerDecoderLayerBase
+        """
+        super(GTransformerDecoderLayer, self).__init__( # ADDED inherit from GTransformerDecoderLayerBase
+            d_model,
+            heads,
+            d_ff,
+            dropout,
+            attention_dropout,
+            self_attn_type,
+            max_relative_positions,
+            relative_positions_buckets,
+            aan_useffn,
+            full_context_alignment,
+            alignment_heads,
+            pos_ffn_activation_fn=pos_ffn_activation_fn,
+            add_qkvbias=add_qkvbias,
+            num_kv=num_kv,
+            add_ffnbias=add_ffnbias,
+            parallel_residual=parallel_residual,
+            shared_layer_norm=shared_layer_norm,
+            layer_norm=layer_norm,
+            norm_eps=norm_eps,
+            use_ckpting=use_ckpting,
+            parallel_gpu=parallel_gpu,
+            sliding_window=sliding_window,
+            rotary_interleave=rotary_interleave,
+            rotary_theta=rotary_theta,
+            rotary_dim=rotary_dim,
+            num_experts=num_experts,
+            num_experts_per_tok=num_experts_per_tok,
+        )
+        # self.context_attn = MultiHeadedAttention(
+        #     heads,
+        #     d_model,
+        #     dropout=attention_dropout,
+        #     attn_type="context",
+        #     self_attn_type=self.self_attn_type,
+        #     add_qkvbias=add_qkvbias,
+        #     num_kv=num_kv,
+        #     use_ckpting=use_ckpting,
+        #     parallel_gpu=parallel_gpu,
+        # )
+        if layer_norm == "standard":
+            self.layer_norm_2 = nn.LayerNorm(d_model, eps=norm_eps)
+        elif layer_norm == "rms":
+            self.layer_norm_2 = RMSNorm(d_model, eps=norm_eps)
+        else:
+            raise ValueError(f"{layer_norm} layer norm type is not supported")
+
+    def update_dropout(self, dropout, attention_dropout):
+        super(GTransformerDecoderLayer, self).update_dropout(dropout, attention_dropout) # ADDED inherit from GTransformerDecoderLayerBase
+        # self.context_attn.update_dropout(attention_dropout) # REMOVED
+
+    def _forward(
+        self,
+        layer_in,
+        enc_out,
+        src_pad_mask,
+        tgt_pad_mask,
+        step=None,
+        future=False,
+        return_attn=False,
+        local_attn_mask=None, # ADDED
+        global_attn_mask=None, # ADDED
+        encoder_local_mask=None, # ADDED
+    ):
+        """A naive forward pass for transformer decoder.
+
+        # T: could be 1 in the case of stepwise decoding or tgt_len
+
+        Args:
+            layer_in (FloatTensor): ``(batch_size, T, model_dim)``
+            enc_out (FloatTensor): ``(batch_size, src_len, model_dim)``
+            src_pad_mask (bool): ``(batch_size, 1, src_len)``
+            tgt_pad_mask (bool): ``(batch_size, 1, T)``
+            layer_cache (dict or None): cached layer info when stepwise decode
+            step (int or None): stepwise decoding counter
+            future (bool): If set True, do not apply future_mask.
+            return_attn (bool) : if set True requires attns output
+
+        Returns:
+            (FloatTensor, FloatTensor):
+
+            * layer_out ``(batch_size, T, model_dim)``
+            * attns ``(batch_size, head, T, src_len)``
+
+        """
+        dec_mask = None
+        src_pad_mask = src_pad_mask.unsqueeze(1)  # [B,1,1,slen]
+
+        if layer_in.size(1) > 1:
+            # masking is necessary when sequence length is greater than one
+            dec_mask = self._compute_dec_mask(tgt_pad_mask, future)
+            dec_mask = dec_mask.unsqueeze(1)
+            dec_mask = dec_mask.expand(-1, -1, dec_mask.size(3), -1)
+            src_pad_mask = src_pad_mask.expand(-1, -1, dec_mask.size(3), -1)
+            # mask now are (batch x 1 x tlen x s or t len)
+            # 1 = heads to be expanded in MHA
+
+        norm_layer_in = self.layer_norm_1(layer_in)
+
+        self_attn, attn_dict = self._forward_self_attn( # ADDED attn_dict
+            norm_layer_in, dec_mask, step, return_attn=return_attn, local_attn_mask=local_attn_mask, global_attn_mask=global_attn_mask # ADDED local_attn_mask, global_attn_mask
+        )
+        if self.dropout_p > 0:
+            self_attn = self.dropout(self_attn)
+        if self.parallel_residual:
+            ctx_attn, attns = self.encoder_attn_local( # CHANGED self.context_attn -> self.encoder_attn_local
+                enc_out,
+                enc_out,
+                norm_layer_in,
+                mask=src_pad_mask,
+                attn_mask=encoder_local_mask, # ADDED
+                return_attn=return_attn,
+            )
+            # feed_forward applies residual, so we remove and apply residual with un-normed
+            layer_out = (
+                self.feed_forward(norm_layer_in)
+                - norm_layer_in
+                + layer_in
+                + self_attn
+                + ctx_attn
+            )
+        else:
+            query = self_attn + layer_in
+            norm_query = self.layer_norm_2(query)
+            ctx_attn, attns = self.encoder_attn_local( # CHANGED self.context_attn -> self.encoder_attn_local
+                enc_out, enc_out, norm_query, mask=src_pad_mask, attn_mask=encoder_local_mask, return_attn=return_attn # ADDED attn_mask=encoder_local_mask
+            )
+            if self.dropout_p > 0:
+                ctx_attn = self.dropout(ctx_attn)
+            layer_out = self.feed_forward(ctx_attn + query)
+
+        if return_attn:
+            if attns is None:
+                attns = attn_dict
+            else:
+                attns.update(attn_dict)
+        return layer_out, attns # MODIFIED return attns
 
 class TransformerDecoderLayerBase(nn.Module):
     def __init__(

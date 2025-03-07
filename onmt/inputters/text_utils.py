@@ -4,7 +4,24 @@ from onmt.constants import DefaultTokens, CorpusTask, ModelTask
 from torch.nn.utils.rnn import pad_sequence
 from onmt.utils.logging import logger
 from collections import Counter
+def get_sentence_tags(self, text):
+    batch_size, max_seq_len, _ = text.size()
+    sentence_tags = torch.zeros_like(text, dtype=torch.long)
+    # Get the sentence boundaries using the "<END>" token
+    eos_token = 9  # HARD CODED FOR <END>
+    eos_mask = (text == eos_token)
 
+    for i in range(batch_size):
+        sentence_boundaries = eos_mask[i].nonzero(as_tuple=False)
+        start = 0
+        for j, sentence_boundary in enumerate(sentence_boundaries, start=1):
+            sentence_tags[i, start:sentence_boundary[0], :] = torch.full((sentence_boundary[0] - start,1), j, dtype=torch.long)
+            start = sentence_boundary[0]
+
+        # For the last sentence
+        sentence_tags[i, start:] = len(sentence_boundaries) + 1
+
+    return sentence_tags
 
 def parse_features(line, n_feats=0, defaults=None):
     """

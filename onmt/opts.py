@@ -630,56 +630,33 @@ def model_opts(parser):
     )
 
     group.add(
-            "--encoder_type",
-            "-encoder_type",
-            type=str,
-            default="rnn",
-            help="Type of encoder layer to use. Non-RNN layers "
-            "are experimental. Default options are "
-            "[rnn|brnn|ggnn|mean|transformer|cnn|gtransformer|transformer_lm].", # ADDED gtransformer
-        )
+        "--encoder_type",
+        "-encoder_type",
+        type=str,
+        default="rnn",
+        choices=["rnn", "brnn", "ggnn", "mean", "transformer", "cnn", "transformer_lm", "gtransformer"], # ADDED gtransformer
+        help="Type of encoder layer to use. Non-RNN layers "
+        "are experimental. Default options are "
+        "[rnn|brnn|ggnn|mean|transformer|cnn|transformer_lm].",
+    )
     group.add(
-            "--decoder_type",
-            "-decoder_type",
-            type=str,
-            default="rnn",
-            help="Type of decoder layer to use. Non-RNN layers "
-            "are experimental. Default options are "
-            "[rnn|transformer|cnn|transformer|gtransformer].", # ADDED gtransformer
-        )
-
-    group = parser.add_argument_group("Model- Encoder-Decoder") # ADDED
+        "--decoder_type",
+        "-decoder_type",
+        type=str,
+        default="rnn",
+        choices=["rnn", "transformer", "cnn", "transformer", "gtransformer"], # ADDED gtransformer
+        help="Type of decoder layer to use. Non-RNN layers "
+        "are experimental. Default options are "
+        "[rnn|transformer|cnn|transformer].",
+    )
     group.add(
-            "--doc_mode",
-            "-doc_mode",
-            type=str,
-            default="none",
-            choices=["none", "partial", "full"],
-            help="Type of document level model, "
-            " for G-Transformer model, "
-            " options are [partial|full|none].", # ADDED gtransformer
-        )
-    group.add(
-            "--encoder_ctxlayers",
-            "-encoder_ctxlayers",
-            type=int,
-            default=2,
-            help="Number of combined attention layers in the encoder.", # ADDED
-        )
-    group.add(
-            "--decoder_ctxlayers",
-            "-decoder_ctxlayers",
-            type=int,
-            default=2,
-            help="Number of combined self attention layers in the decoder.", # ADDED
-        )
-    group.add(
-            "--cross_ctxlayers",
-            "-cross_ctxlayers",
-            type=int,
-            default=2,
-            help="Number of combined cross attention layers in the decoder.", # ADDED
-        )
+        "--doc_mode", # ADDED
+        "-doc_mode", # ADDED
+        type=str, # ADDED
+        default="normal", # ADDED
+        choices=["normal", "partial"], # ADDED
+        help="Document mode: normal or partial (G-Transformer)", # ADDED
+    )
 
     # Freeze Encoder and/or Decoder
     group.add(

@@ -7,7 +7,7 @@ from onmt.encoders.ggnn_encoder import GGNNEncoder
 from onmt.encoders.rnn_encoder import RNNEncoder
 from onmt.encoders.cnn_encoder import CNNEncoder
 from onmt.encoders.mean_encoder import MeanEncoder
-from onmt.encoders.g_transformer_encoder import GTransformerEncoder #ADDED
+from onmt.encoders.gtransformer_encoder import GTransformerEncoder # ADDED
 
 str2enc = {
     "ggnn": GGNNEncoder,
@@ -16,7 +16,6 @@ str2enc = {
     "cnn": CNNEncoder,
     "transformer": TransformerEncoder,
     "mean": MeanEncoder,
-    "gtransformer": GTransformerEncoder, # ADDED
 }
 
 __all__ = [

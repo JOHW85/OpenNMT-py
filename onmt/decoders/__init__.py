@@ -4,7 +4,7 @@ import importlib
 from onmt.decoders.decoder import DecoderBase, InputFeedRNNDecoder, StdRNNDecoder
 from onmt.decoders.transformer import TransformerDecoder, TransformerLMDecoder
 from onmt.decoders.cnn_decoder import CNNDecoder
-from onmt.decoders.g_transformer_decoder import GTransformerDecoder #ADDED
+from onmt.decoders.gtransformer_decoder import GTransformerDecoder #ADDED
 
 
 str2dec = {
@@ -13,7 +13,6 @@ str2dec = {
     "cnn": CNNDecoder,
     "transformer": TransformerDecoder,
     "transformer_lm": TransformerLMDecoder,
-    "gtransformer": GTransformerDecoder, #ADDED
 }
 
 __all__ = [
