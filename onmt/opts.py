@@ -630,23 +630,56 @@ def model_opts(parser):
     )
 
     group.add(
-        "--encoder_type",
-        "-encoder_type",
-        type=str,
-        default="rnn",
-        help="Type of encoder layer to use. Non-RNN layers "
-        "are experimental. Default options are "
-        "[rnn|brnn|ggnn|mean|transformer|cnn|transformer_lm].",
-    )
+            "--encoder_type",
+            "-encoder_type",
+            type=str,
+            default="rnn",
+            help="Type of encoder layer to use. Non-RNN layers "
+            "are experimental. Default options are "
+            "[rnn|brnn|ggnn|mean|transformer|cnn|gtransformer|transformer_lm].", # ADDED gtransformer
+        )
     group.add(
-        "--decoder_type",
-        "-decoder_type",
-        type=str,
-        default="rnn",
-        help="Type of decoder layer to use. Non-RNN layers "
-        "are experimental. Default options are "
-        "[rnn|transformer|cnn|transformer].",
-    )
+            "--decoder_type",
+            "-decoder_type",
+            type=str,
+            default="rnn",
+            help="Type of decoder layer to use. Non-RNN layers "
+            "are experimental. Default options are "
+            "[rnn|transformer|cnn|transformer|gtransformer].", # ADDED gtransformer
+        )
+
+    group = parser.add_argument_group("Model- Encoder-Decoder") # ADDED
+    group.add(
+            "--doc_mode",
+            "-doc_mode",
+            type=str,
+            default="none",
+            choices=["none", "partial", "full"],
+            help="Type of document level model, "
+            " for G-Transformer model, "
+            " options are [partial|full|none].", # ADDED gtransformer
+        )
+    group.add(
+            "--encoder_ctxlayers",
+            "-encoder_ctxlayers",
+            type=int,
+            default=2,
+            help="Number of combined attention layers in the encoder.", # ADDED
+        )
+    group.add(
+            "--decoder_ctxlayers",
+            "-decoder_ctxlayers",
+            type=int,
+            default=2,
+            help="Number of combined self attention layers in the decoder.", # ADDED
+        )
+    group.add(
+            "--cross_ctxlayers",
+            "-cross_ctxlayers",
+            type=int,
+            default=2,
+            help="Number of combined cross attention layers in the decoder.", # ADDED
+        )
 
     # Freeze Encoder and/or Decoder
     group.add(

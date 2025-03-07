@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from glob import glob
-
+from onmt.models.nmt_model import NMTModel
 
 class BaseModel(nn.Module):
     """Core trainable object in OpenNMT. Implements a trainable interface

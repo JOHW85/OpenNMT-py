@@ -8,7 +8,12 @@ import numpy as np
 import os
 from copy import deepcopy
 
-
+def tokens2tags(dict, tokens, eod): # ADDED
+    mask_tag = ~((tokens == dict.pad_index) | (tokens == dict.index(eod))) # ADDED
+    start_tag = (tokens == dict.bos_index).int() # ADDED
+    tok_tags = torch.cumsum(start_tag, dim=1) * mask_tag.int() # ADDED
+    return tok_tags # ADDED
+    
 class RandomShuffler(object):
     """Use random functions while keeping track of the random state to make it
     reproducible and deterministic.

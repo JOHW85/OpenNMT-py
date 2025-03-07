@@ -7,8 +7,8 @@ import torch.nn as nn
 from torch.nn.utils import skip_init
 from torch.nn.init import xavier_uniform_, zeros_, uniform_
 from onmt.models.model import NMTModel, LanguageModel
-from onmt.encoders import str2enc
-from onmt.decoders import str2dec
+from onmt.encoders import str2enc, get_encoders_cls # ADDED
+from onmt.decoders import str2dec, get_encoders_cls # ADDED
 from onmt.inputters.inputter import dict_to_vocabs
 from onmt.modules import Embeddings, CopyGenerator
 from onmt.utils.misc import use_gpu
@@ -72,7 +72,6 @@ def build_encoder(opt, embeddings):
         embeddings (Embeddings): vocab embeddings for this encoder.
     """
     enc_type = opt.encoder_type if opt.model_type == "text" else opt.model_type
-    return str2enc[enc_type].from_opt(opt, embeddings)
 
 
 def build_decoder(opt, embeddings):
@@ -85,7 +84,25 @@ def build_decoder(opt, embeddings):
     dec_type = (
         "ifrnn" if opt.decoder_type == "rnn" and opt.input_feed else opt.decoder_type
     )
-    return str2dec[dec_type].from_opt(opt, embeddings)
+
+def get_encoders_cls(encoder_names): # ADDED
+    """Return valid encoder class indicated in `encoder_names`."""
+    encoders_cls = {}
+    for name in encoder_names:
+        if name not in str2enc:
+            raise ValueError("%s encoder not supported!" % name)
+        encoders_cls[name] = str2enc[name]
+    return encoders_cls
+
+
+def get_decoders_cls(decoders_names): # ADDED
+    """Return valid encoder class indicated in `decoders_names`."""
+    decoders_cls = {}
+    for name in decoders_names:
+        if name not in str2dec:
+            raise ValueError("%s decoder not supported!" % name)
+        decoders_cls[name] = str2dec[name]
+    return decoders_cls
 
 
 def load_test_model(opt, device_id=0, model_path=None):
